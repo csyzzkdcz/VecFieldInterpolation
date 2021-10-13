@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.0.0)
 
-project("libIGL polyscope example project")
+project("Vector filed interpolation")
 
 # Maybe stop from CMAKEing in the wrong place
 if (CMAKE_BINARY_DIR STREQUAL CMAKE_SOURCE_DIR)
@@ -80,12 +80,12 @@ add_subdirectory("deps/polyscope")
 
 # Create an executable
 add_executable(
-        libIGL-polyscope-example
+        vecfield-polyscope-example
         src/main.cpp
         )
 
 # Include settings
-target_include_directories(libIGL-polyscope-example PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/libigl/include")
+target_include_directories(vecfield-polyscope-example PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/deps/libigl/include")
 
 # Link settings
-target_link_libraries(libIGL-polyscope-example polyscope Eigen3::Eigen)
+target_link_libraries(vecfield-polyscope-example polyscope Eigen3::Eigen)
