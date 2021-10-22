@@ -70,18 +70,29 @@ add_subdirectory("deps/polyscope")
 # Add libIGL
 # With these lines commented out, we use libIGL in "header only" mode.  Uncomment to recurse and get the full package.
 # (and see the libIGL build documentation)
-#message("\n\n == CMAKE recursively building libIGL\n")
-#set(LIBIGL_WITH_EMBREE            OFF CACHE BOOL "Use Embree")
-#set(LIBIGL_WITH_OPENGL            OFF CACHE BOOL "Use OpenGL")
-#set(LIBIGL_WITH_OPENGL            OFF CACHE BOOL "Use OpenGL")
-#set(LIBIGL_WITH_OPENGL_GLFW       OFF CACHE BOOL "Use GLFW"  )
-#set(LIBIGL_WITH_OPENGL_GLFW_IMGUI OFF CACHE BOOL "Use ImGui" )
-#add_subdirectory("deps/libIGL")
+# message("\n\n == CMAKE recursively building libIGL\n")
+# set(LIBIGL_WITH_EMBREE            OFF CACHE BOOL "Use Embree")
+# set(LIBIGL_WITH_OPENGL            OFF CACHE BOOL "Use OpenGL")
+# set(LIBIGL_WITH_OPENGL            OFF CACHE BOOL "Use OpenGL")
+# set(LIBIGL_WITH_OPENGL_GLFW       OFF CACHE BOOL "Use GLFW"  )
+# set(LIBIGL_WITH_OPENGL_GLFW_IMGUI OFF CACHE BOOL "Use ImGui" )
+# set(LIBIGL_WITH_TRIANGLE          ON  CACHE BOOL "Use Triangle" )
+# add_subdirectory("deps/libIGL")
 
 # Create an executable
+file(GLOB SRCFILES  
+    include/*.h
+    include/diffOp/*.h 
+    include/EnergyModel/*.h
+    include/Optimization/*.h
+    src/*.cpp
+    src/diffOp/*.cpp
+    src/EnergyModel/*.cpp
+    src/Optimization/*.cpp)
+    
 add_executable(
         vecfield-polyscope-example
-        src/main.cpp
+        ${SRCFILES}
         )
 
 # Include settings

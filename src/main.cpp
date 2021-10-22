@@ -11,6 +11,10 @@
 #include <igl/massmatrix.h>
 #include <igl/per_vertex_normals.h>
 #include <igl/readOBJ.h>
+#include <igl/writeOBJ.h>
+#include <igl/doublearea.h>
+#include <igl/boundary_loop.h>
+//#include <igl/triangle/triangulate.h>
 
 #include "polyscope/messages.h"
 #include "polyscope/point_cloud.h"
@@ -20,155 +24,191 @@
 #include <unordered_set>
 #include <utility>
 
-#include "args/args.hxx"
-#include "json/json.hpp"
+#include "../include/EnergyModel/energyModel.h"
+#include "../include/OptProblem.h"
+#include "../include/Optimization/NewtonDescent.h"
+#include <map>
 
 // The mesh, Eigen representation
 Eigen::MatrixXd meshV;
 Eigen::MatrixXi meshF;
 
-// Options for algorithms
-int iVertexSource = 7;
+Eigen::MatrixXd vecField(0, 0);
+Eigen::VectorXd scalarField(0);
 
-void addCurvatureScalar() {
-  using namespace Eigen;
-  using namespace std;
+int bndTypes = 0;
 
-  VectorXd K;
-  igl::gaussian_curvature(meshV, meshF, K);
-  SparseMatrix<double> M, Minv;
-  igl::massmatrix(meshV, meshF, igl::MASSMATRIX_TYPE_DEFAULT, M);
-  igl::invert_diag(M, Minv);
-  K = (Minv * K).eval();
 
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexScalarQuantity("gaussian curvature", K,
-                                polyscope::DataType::SYMMETRIC);
+void initFields()
+{
+	vecField.setRandom(meshV.rows(), 2);
+	scalarField.setConstant(meshV.rows(), 1);
+
+	for (int i = 0; i < meshV.rows(); i++)
+	{
+		double x = meshV(i, 0);
+		double y = meshV(i, 1);
+
+		if (x * x + y * y != 0)
+		{
+			vecField.row(i) << -y / (x * x + y * y), x / (x * x + y * y);
+		}
+		else
+			vecField.row(i).setZero();
+	}
 }
 
-void computeDistanceFrom() {
-  Eigen::VectorXi VS, FS, VT, FT;
-  // The selected vertex is the source
-  VS.resize(1);
-  VS << iVertexSource;
-  // All vertices are the targets
-  VT.setLinSpaced(meshV.rows(), 0, meshV.rows() - 1);
-  Eigen::VectorXd d;
-  igl::exact_geodesic(meshV, meshF, VS, FS, VT, FT, d);
+void updateFieldsInView()
+{
+	polyscope::getSurfaceMesh("input mesh")
+		->addVertexScalarQuantity("vertex scalar field", scalarField,
+			polyscope::DataType::SYMMETRIC);
 
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexDistanceQuantity(
-          "distance from vertex " + std::to_string(iVertexSource), d);
+	Eigen::MatrixXd vec_vertices(meshV.rows(), 3);
+	vec_vertices.block(0, 0, meshV.rows(), 2) = vecField;
+	vec_vertices.col(2).setZero();
+	polyscope::getSurfaceMesh("input mesh")
+		->addVertexVectorQuantity("vertex vector field", vec_vertices);
 }
 
-void computeParameterization() {
-  using namespace Eigen;
-  using namespace std;
+void getClampedDOFs(std::map<int, double>& clampedDOFs)
+{
+	clampedDOFs.clear();
+	if (bndTypes == 0)
+	{
+		int nverts = meshV.rows();
+		std::vector<int> bnd;
+		igl::boundary_loop(meshF, bnd);
 
-  // Fix two points on the boundary
-  VectorXi bnd, b(2, 1);
-  igl::boundary_loop(meshF, bnd);
+		for (int i = 0; i < bnd.size(); i++)
+		{
+			int vid = bnd[i];
+			clampedDOFs[vid] = scalarField(vid);
+			clampedDOFs[nverts + 2 * vid] = vecField(vid, 0);
+			clampedDOFs[nverts + 2 * vid + 1] = vecField(vid, 1);
+		}
+	}
+	else
+	{
+		int nverts = meshV.rows();
+		std::vector<int> bnd;
+		igl::boundary_loop(meshF, bnd);
+		double minx = meshV.col(0).minCoeff();
+		double maxx = meshV.col(0).maxCoeff();
+		double miny = meshV.col(1).minCoeff();
+		double maxy = meshV.col(1).maxCoeff();
 
-  if (bnd.size() == 0) {
-    polyscope::warning("mesh has no boundary, cannot parameterize");
-    return;
-  }
+		for (int i = 0; i < bnd.size(); i++)
+		{
+			int vid = bnd[i];
+			double x = meshV(vid, 0);
+			double y = meshV(vid, 1);
 
-  b(0) = bnd(0);
-  b(1) = bnd(int(round(bnd.size() / 2)));
-  MatrixXd bc(2, 2);
-  bc << 0, 0, 1, 0;
-
-  // LSCM parametrization
-  Eigen::MatrixXd V_uv;
-  igl::lscm(meshV, meshF, b, bc, V_uv);
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexParameterizationQuantity("LSCM parameterization", V_uv);
-}
-
-void computeNormals() {
-  Eigen::MatrixXd N_vertices;
-  igl::per_vertex_normals(meshV, meshF, N_vertices);
-
-  polyscope::getSurfaceMesh("input mesh")
-      ->addVertexVectorQuantity("libIGL vertex normals", N_vertices);
+			if ((std::abs(x - minx) < 1e-7 && std::abs(y - miny) < 1e-7) ||
+				(std::abs(x - maxx) < 1e-7 && std::abs(y - miny) < 1e-7) ||
+				(std::abs(x - minx) < 1e-7 && std::abs(y - maxy) < 1e-7) ||
+				(std::abs(x - maxx) < 1e-7 && std::abs(y - maxy) < 1e-7))
+			{
+				clampedDOFs[vid] = scalarField(vid);
+				clampedDOFs[nverts + 2 * vid] = vecField(vid, 0);
+				clampedDOFs[nverts + 2 * vid + 1] = vecField(vid, 1);
+			}
+			else
+			{
+				if (std::abs(x - minx) < 1e-7 || std::abs(x - maxx) < 1e-7)
+				{
+					clampedDOFs[nverts + 2 * vid] = vecField(vid, 0);
+				}
+				else
+					clampedDOFs[nverts + 2 * vid + 1] = vecField(vid, 1);
+			}
+			
+		}
+	}
 }
 
 void callback() {
-
-  static int numPoints = 2000;
-  static float param = 3.14;
-
   ImGui::PushItemWidth(100);
 
-  // Curvature
-  if (ImGui::Button("add curvature")) {
-    addCurvatureScalar();
-  }
-  
-  // Normals 
-  if (ImGui::Button("add normals")) {
-    computeNormals();
-  }
+  // scalar fields
+  ImGui::Combo("bnd types", (int*)&bndTypes, "Direchlet\0Const Projection\0\0");
+  if (ImGui::Button("update vector field"))
+  {
+	  std::map<int, double> clampedDOFs;
+	  getClampedDOFs(clampedDOFs);
+	  OptModel model(meshV, meshF, clampedDOFs);
 
-  // Param
-  if (ImGui::Button("add parameterization")) {
-    computeParameterization();
-  }
+	  auto funVal = [&](const Eigen::VectorXd& x, Eigen::VectorXd* grad, Eigen::SparseMatrix<double>* hess, bool isProj)
+	  {
+		  Eigen::VectorXd deriv;
+		  Eigen::SparseMatrix<double> H;
+		  double E = model.computeEnergy(x, grad ? &deriv : NULL, hess ? &H : NULL, isProj);
 
-  // Geodesics
-  if (ImGui::Button("compute distance")) {
-    computeDistanceFrom();
+		  if (grad)
+		  {
+			  (*grad) = deriv;
+		  }
+
+		  if (hess)
+		  {
+			  (*hess) = H;
+		  }
+
+		  return E;
+	  };
+	  auto maxStep = [&](const Eigen::VectorXd& x, const Eigen::VectorXd& dir)
+	  {
+		  return 1.0;
+	  };
+	  Eigen::VectorXd x;
+	  model.convertState2Variable(vecField, scalarField, x);
+
+	  OptSolver::newtonSolver(funVal, maxStep, x, 1000, 1e-7, 0, 0, true);
+	  model.convertVariable2State(x, vecField, scalarField);
+
+	  updateFieldsInView();
+	  
   }
-  ImGui::SameLine();
-  ImGui::InputInt("source vertex", &iVertexSource);
+  if (ImGui::Button("reset vector field"))
+  {
+	  initFields();
+	  updateFieldsInView();
+  }
 
   ImGui::PopItemWidth();
 }
 
-int main(int argc, char **argv) {
-  // Configure the argument parser
-  args::ArgumentParser parser("A simple demo of Polyscope with libIGL.\nBy "
-                              "Nick Sharp (nsharp@cs.cmu.edu)",
-                              "");
-  args::Positional<std::string> inFile(parser, "mesh", "input mesh");
+int main(int argc, char** argv) {
+	if (argc != 2)
+	{
+		std::cout << "please specific the mesh name!" << std::endl;
+		return 1;
+	}
 
-  // Parse args
-  try {
-    parser.ParseCLI(argc, argv);
-  } catch (args::Help) {
-    std::cout << parser;
-    return 0;
-  } catch (args::ParseError e) {
-    std::cerr << e.what() << std::endl;
+	// Options
+	polyscope::options::autocenterStructures = true;
+	polyscope::view::windowWidth = 1024;
+	polyscope::view::windowHeight = 1024;
 
-    std::cerr << parser;
-    return 1;
-  }
+	// Initialize polyscope
+	polyscope::init();
 
-  // Options
-  polyscope::options::autocenterStructures = true;
-  polyscope::view::windowWidth = 1024;
-  polyscope::view::windowHeight = 1024;
+	std::string filename = argv[1];
+	std::cout << "loading: " << filename << std::endl;
 
-  // Initialize polyscope
-  polyscope::init();
+	// Read the mesh
+	igl::readOBJ(filename, meshV, meshF);
 
-  std::string filename = args::get(inFile);
-  std::cout << "loading: " << filename << std::endl;
+	
+	// Register the mesh with Polyscope
+	polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+	initFields();
 
-  // Read the mesh
-  igl::readOBJ(filename, meshV, meshF);
+	// Add the callback
+	polyscope::state::userCallback = callback;
 
-  // Register the mesh with Polyscope
-  polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
+	// Show the gui
+	polyscope::show();
 
-  // Add the callback
-  polyscope::state::userCallback = callback;
-
-  // Show the gui
-  polyscope::show();
-
-  return 0;
+	return 0;
 }
