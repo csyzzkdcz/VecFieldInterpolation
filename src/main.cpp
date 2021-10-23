@@ -65,10 +65,10 @@ void updateFieldsInView()
 			polyscope::DataType::SYMMETRIC);
 
 	Eigen::MatrixXd vec_vertices(meshV.rows(), 3);
-	vec_vertices.block(0, 0, meshV.rows(), 2) = vecField;
+	vec_vertices.block(0, 0, meshV.rows(), 2) = 0.02 * vecField;
 	vec_vertices.col(2).setZero();
 	polyscope::getSurfaceMesh("input mesh")
-		->addVertexVectorQuantity("vertex vector field", vec_vertices);
+		->addVertexVectorQuantity("vertex vector field", vec_vertices, polyscope::VectorType::AMBIENT);
 }
 
 void getClampedDOFs(std::map<int, double>& clampedDOFs)
