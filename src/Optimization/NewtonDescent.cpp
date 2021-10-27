@@ -69,15 +69,34 @@ void OptSolver::newtonSolver(std::function<double(const Eigen::VectorXd&, Eigen:
 		if (f - fnew < 1e-5 || rate * delta_x.norm() < 1e-5 || grad.norm() < 1e-4)
 			isProj = false;
 
+
+		if (rate < 1e-8)
+		{
+			std::cout << "terminate with small line search rate (<1e-8): L2-norm = " << grad.norm() << std::endl;
+			return;
+		}
+
 		if (grad.norm() < gradTol)
+		{
+			std::cout << "terminate with gradient L2-norm = " << grad.norm() << std::endl;
 			return;
+		}
+			
 		if (rate * delta_x.norm() < xTol)
+		{
+			std::cout << "terminate with small variable change, gradient L2-norm = " << grad.norm() << std::endl;
 			return;
+		}
+			
 		if (f - fnew < fTol)
+		{ 
+			std::cout << "terminate with small energy change, gradient L2-norm = " << grad.norm() << std::endl;
 			return;
+		}
 	}
 	if (i >= numIter)
 		std::cout << "terminate with reaching the maximum iteration, with gradient L2-norm = " << grad.norm() << std::endl;
+		
 }
 
 
