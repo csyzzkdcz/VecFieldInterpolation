@@ -50,6 +50,7 @@ Eigen::MatrixXd vecField(0, 0);
 
 Eigen::VectorXd scalarField(0);
 Eigen::VectorXd scalarFieldNormalized(0);
+std::string modelName;
 
 std::vector<Eigen::MatrixXd> vecFieldLists;
 std::vector<Eigen::VectorXd> scalarFieldLists;
@@ -528,7 +529,9 @@ void callback() {
   if (ImGui::Button("update the dynamic vector field"))
   {
 	  int numSteps = totalFrames;
-	  std::string filePath = "C:/Users/csyzz/Projects/VecFieldInterpolation/build/results/" + std::to_string(numSteps) + "Steps/";
+	  std::string curPath = std::filesystem::current_path();
+	  std::cout << "current path: " << curPath << std::endl;
+	  std::string filePath = curPath + "/results/" + modelName + "/" + std::to_string(numSteps) + "Steps/";
 
 	  if (bndTypes == 0)
 		  filePath += "Direchlet/";
@@ -714,6 +717,10 @@ int main(int argc, char** argv) {
 
 	std::string filename = argv[1];
 	std::cout << "loading: " << filename << std::endl;
+	int id0 = filename.rfind(".obj");
+	int id1 = filename.rfind("/");
+	modelName = filename.substr(id1 + 1, id0 - id1 - 1);
+	std::cout << modelName << std::endl;
 
 	// Read the mesh
 	igl::readOBJ(filename, meshV, meshF);
