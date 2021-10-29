@@ -62,6 +62,7 @@ int curFrame = 0;
 float ratio = 0.02;
 bool isNormalize = false;
 bool isWeightedVec = false;
+bool isSaveScreenShot = false;
 
 double scaMin = 0;
 double scaMax = 1;
@@ -96,11 +97,16 @@ void updateFieldsInView()
 		polyscope::getSurfaceMesh("input mesh")
 			->addVertexScalarQuantity("vertex scalar field", scalarFieldNormalized,
 				polyscope::DataType::SYMMETRIC);
+		polyscope::getSurfaceMesh("input mesh")->getQuantity("vertex scalar field")->setEnabled(true);
 	}
 	else
+	{
 		polyscope::getSurfaceMesh("input mesh")
-		->addVertexScalarQuantity("vertex scalar field", scalarField,
-			polyscope::DataType::SYMMETRIC);
+			->addVertexScalarQuantity("vertex scalar field", scalarField,
+				polyscope::DataType::SYMMETRIC);
+		polyscope::getSurfaceMesh("input mesh")->getQuantity("vertex scalar field")->setEnabled(true);
+	}
+		
 	
 
 	Eigen::MatrixXd vec_vertices(meshV.rows(), 3);
@@ -113,6 +119,7 @@ void updateFieldsInView()
 	vec_vertices.col(2).setZero();
 	polyscope::getSurfaceMesh("input mesh")
 		->addVertexVectorQuantity("vertex vector field", vec_vertices, polyscope::VectorType::AMBIENT);
+	polyscope::getSurfaceMesh("input mesh")->getQuantity("vertex vector field")->setEnabled(true);
 }
 
 void getClampedDOFs(std::map<int, double>& clampedDOFs, Eigen::MatrixXd refVecField, Eigen::VectorXd refScaField)
@@ -626,6 +633,43 @@ void callback() {
 		  curMax = scalarField.maxCoeff();
 
 		  updateFieldsInView();
+		  if (isSaveScreenShot)
+		  {
+			  int numSteps = totalFrames;
+			  std::string filePath = "C:/Users/csyzz/Projects/VecFieldInterpolation/build/results/" + std::to_string(numSteps) + "Steps/";
+
+			  if (bndTypes == 0)
+				  filePath += "Direchlet/";
+			  else
+				  filePath += "ConstProj/";
+
+			  std::string DTmodel = "";
+
+			  if (dynamicTypes == DynamicType::DT_Rotate)
+				  DTmodel = "rotate/";
+			  else if (dynamicTypes == DynamicType::DT_ENLARGE)
+				  DTmodel = "enlarge/";
+			  else if (dynamicTypes == DynamicType::DT_COMPOSITE)
+				  DTmodel = "composite/";
+			  else if (dynamicTypes == DynamicType::DT_HALF_ROTATE)
+				  DTmodel = "half_rotate/";
+			  else if (dynamicTypes == DynamicType::DT_HALF_ENLARGE)
+				  DTmodel = "half_enlarge/";
+			  else
+				  DTmodel = "half_composite/";
+
+			  std::string folder = filePath + DTmodel + "imags/";
+			  if (!std::filesystem::exists(folder))
+			  {
+				  std::cout << "create directory: " << folder << std::endl;
+				  if (!std::filesystem::create_directories(folder))
+				  {
+					  std::cout << "create folder failed." << folder << std::endl;
+				  }
+			  }
+			  polyscope::screenshot(folder + "results_" + std::to_string(curFrame) + ".png");
+		  }
+		 
 	  }
   }
   if (ImGui::DragFloat("vector ratio", &ratio, 0.001, 0, 1))
@@ -641,6 +685,7 @@ void callback() {
   {
 	  updateFieldsInView();
   }
+  ImGui::Checkbox("screen shot", &isSaveScreenShot);
 
   ImGui::InputDouble("global min", &scaMin);
   ImGui::SameLine();
