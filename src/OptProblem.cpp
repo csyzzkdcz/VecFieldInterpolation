@@ -1,5 +1,6 @@
 #include "../include/OptProblem.h"
 #include <iostream>
+#include <igl/doublearea.h>
 
 void OptModel::setProjM()
 {
@@ -7,16 +8,27 @@ void OptModel::setProjM()
 	int nverts = _meshV.rows();
 	int DOFs = 3 * nverts;
 
+	Eigen::VectorXd faceAreas;
+	igl::doublearea(_meshV, _meshF, faceAreas);
+
+	std::vector<double> usefulMass;
+
 	std::vector<Eigen::Triplet<double>> T;
 	for (int i = 0; i < DOFs; i++)
 	{
 		if (_clampDOFs.find(i) != _clampDOFs.end())
 			continue;
 		T.push_back({ row, i, 1.0 });
+		double mass = faceAreas(i / 3);
+		usefulMass.push_back(mass);
 		row++;
 	}
 	_projM.resize(row, DOFs);
 	_projM.setFromTriplets(T.begin(), T.end());
+
+	_mass.setZero(row);
+	for(int i = 0; i < row; i++)
+	    _mass(i) = usefulMass[i];
 	std::cout << "project matrix setup done!" << std::endl;
 }
 

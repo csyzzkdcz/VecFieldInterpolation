@@ -30,6 +30,9 @@
 #include "../include/EnergyModel/energyModel.h"
 #include "../include/OptProblem.h"
 #include "../include/Optimization/NewtonDescent.h"
+#include "../include/Optimization/ProjectionScheme.h"
+#include "../include/Optimization/GradientFlow.h"
+#include "../include/Optimization/PenaltyNewton.h"
 #include <map>
 
 enum DynamicType
@@ -40,6 +43,13 @@ enum DynamicType
 	DT_HALF_ROTATE = 3,
 	DT_HALF_ENLARGE = 4,
 	DT_HALF_COMPOSITE = 5
+};
+enum OptMethod
+{
+    OPT_NT = 0,
+    OPT_FEPR = 1,
+    OPT_GF = 2,
+    OPT_PENALTY = 3
 };
 
 // The mesh, Eigen representation
@@ -61,9 +71,14 @@ DynamicType dynamicTypes = DynamicType::DT_Rotate;
 int totalFrames = 100;
 int curFrame = 0;
 float ratio = 0.02;
+double penaltyRatio = 1e-3;
+double GFTheta = 1;
 bool isNormalize = false;
 bool isWeightedVec = false;
 bool isSaveScreenShot = false;
+bool isShowVec = true;
+bool isShowSca = true;
+OptMethod optMet = OptMethod::OPT_NT;
 
 double scaMin = 0;
 double scaMax = 1;
@@ -98,14 +113,14 @@ void updateFieldsInView()
 		polyscope::getSurfaceMesh("input mesh")
 			->addVertexScalarQuantity("vertex scalar field", scalarFieldNormalized,
 				polyscope::DataType::SYMMETRIC);
-		polyscope::getSurfaceMesh("input mesh")->getQuantity("vertex scalar field")->setEnabled(true);
+		polyscope::getSurfaceMesh("input mesh")->getQuantity("vertex scalar field")->setEnabled(isShowSca);
 	}
 	else
 	{
 		polyscope::getSurfaceMesh("input mesh")
 			->addVertexScalarQuantity("vertex scalar field", scalarField,
 				polyscope::DataType::SYMMETRIC);
-		polyscope::getSurfaceMesh("input mesh")->getQuantity("vertex scalar field")->setEnabled(true);
+		polyscope::getSurfaceMesh("input mesh")->getQuantity("vertex scalar field")->setEnabled(isShowSca);
 	}
 		
 	
@@ -120,7 +135,7 @@ void updateFieldsInView()
 	vec_vertices.col(2).setZero();
 	polyscope::getSurfaceMesh("input mesh")
 		->addVertexVectorQuantity("vertex vector field", vec_vertices, polyscope::VectorType::AMBIENT);
-	polyscope::getSurfaceMesh("input mesh")->getQuantity("vertex vector field")->setEnabled(true);
+	polyscope::getSurfaceMesh("input mesh")->getQuantity("vertex vector field")->setEnabled(isShowVec);
 }
 
 void getClampedDOFs(std::map<int, double>& clampedDOFs, Eigen::MatrixXd refVecField, Eigen::VectorXd refScaField)
@@ -179,7 +194,7 @@ void getClampedDOFs(std::map<int, double>& clampedDOFs, Eigen::MatrixXd refVecFi
 	}
 }
 
-void optimizeVecField(std::map<int, double>& clampedDOFs, Eigen::MatrixXd& initVecField, Eigen::VectorXd& initScaField)
+void optimizeVecField(std::map<int, double>& clampedDOFs, Eigen::MatrixXd& initVecField, Eigen::VectorXd& initScaField, OptMethod methodType)
 {
 	OptModel model(meshV, meshF, clampedDOFs);
 
@@ -207,8 +222,24 @@ void optimizeVecField(std::map<int, double>& clampedDOFs, Eigen::MatrixXd& initV
 	};
 	Eigen::VectorXd x;
 	model.convertState2Variable(initVecField, initScaField, x);
-
-	OptSolver::newtonSolver(funVal, maxStep, x, 1000, 1e-7, 0, 0, true);
+	if (methodType == OptMethod::OPT_GF)
+	{
+	    OptSolver::gradientFlowSolver(funVal, x, 1000, 1e-7, GFTheta, true);
+	}
+	else if(methodType == OptMethod::OPT_PENALTY)
+	{
+	    OptSolver::penaltyNewtonSolver(funVal, maxStep, x, 1000, 1e-7, 0, 0, penaltyRatio, true);
+	}
+	else if (methodType == OptMethod::OPT_FEPR)
+	{
+		Eigen::VectorXd newX;
+	    OptSolver::FEPR(funVal, maxStep, x, model._mass, newX, true);
+	    x = newX;
+	}
+	else
+	{
+		OptSolver::newtonSolver(funVal, maxStep, x, 1000, 1e-7, 0, 0, true);   
+	}
 	model.convertVariable2State(x, initVecField, initScaField);
 }
 
@@ -321,6 +352,8 @@ void setBndDynamicTypesFromData(std::string dataPath)
 	dataPath = dataPath.substr(0, index);
 
 	index = dataPath.rfind("/");
+	std::string optTypeStr = dataPath.substr(index + 1, dataPath.size() - 1);
+	std::cout << "optimaztion method: " << optTypeStr << std::endl;
 	
 	std::string dymodeltype = dataPath.substr(index + 1, dataPath.size() - 1);
 	std::cout << "dynamic type: " << dymodeltype << std::endl;
@@ -496,12 +529,16 @@ void callback() {
   // scalar fields
   ImGui::Combo("bnd types", (int*)&bndTypes, "Direchlet\0Const Projection\0\0");
   ImGui::Combo("dynamic types", (int*)&dynamicTypes, "rotate\0enlarge\0composite\0half rotate\0half enlarge\0half composite\0\0");
+  ImGui::Combo("Opt types", (int*)&optMet, "Newton\0FEPR\0GF\0Penalty\0\0");
+  ImGui::InputDouble("GF theta", &GFTheta);
+  ImGui::SameLine();
+  ImGui::InputDouble("Penalty ratio", &penaltyRatio);
 
   if (ImGui::Button("update vector field"))
   {
 	  std::map<int, double> clampedDOFs;
 	  getClampedDOFs(clampedDOFs, vecField, scalarField);
-	  optimizeVecField(clampedDOFs, vecField, scalarField);
+	  optimizeVecField(clampedDOFs, vecField, scalarField, OptMethod::OPT_NT);
 	  normalizeCurrentFrame(scalarField, scalarFieldNormalized);
 
 	  scaMin = scalarField.minCoeff();
@@ -553,7 +590,16 @@ void callback() {
 	  else
 		  DTmodel = "half_composite/";
 
-	  std::string folder = filePath + DTmodel;
+	  std::string optMT = "";
+	  if(optMet == OptMethod::OPT_NT)
+	      optMT = "Newton/";
+	  else if (optMet == OptMethod::OPT_FEPR)
+	      optMT = "FEPR/";
+	  else if (optMet == OptMethod::OPT_GF)
+	      optMT = "GF_" + std::to_string(GFTheta) + "/";
+	  else
+	      optMT = "Penalty_" + std::to_string(penaltyRatio) + "/";
+	  std::string folder = filePath + DTmodel + optMT;
 	  if (!std::filesystem::exists(folder))
 	  {
 		  std::cout << "create directory: " << folder << std::endl;
@@ -580,8 +626,11 @@ void callback() {
 		  manipulateVecField(initVecField, rotatedVecField, dynamicTypes, theta, r);
 		  getClampedDOFs(clampedDOFs, rotatedVecField, initScalarField);
 
-		  optimizeVecField(clampedDOFs, curVecField, curScalarField);
-
+		  if(i == 0)
+		      optimizeVecField(clampedDOFs, curVecField, curScalarField, OptMethod::OPT_NT);
+		  else
+		      optimizeVecField(clampedDOFs, curVecField, curScalarField, optMet);
+		  
 		  std::string vecPath = folder + "vecField_" + std::to_string(i) + ".csv";
 		  std::ofstream vecFile(vecPath);
 		  for (int i = 0; i < curVecField.rows(); i++)
@@ -639,7 +688,9 @@ void callback() {
 		  if (isSaveScreenShot)
 		  {
 			  int numSteps = totalFrames;
-			  std::string filePath = "C:/Users/csyzz/Projects/VecFieldInterpolation/build/results/" + std::to_string(numSteps) + "Steps/";
+			  std::string curPath = std::filesystem::current_path();
+			  std::cout << "current path: " << curPath << std::endl;
+			  std::string filePath = curPath + "/results/" + modelName + "/" + std::to_string(numSteps) + "Steps/";
 
 			  if (bndTypes == 0)
 				  filePath += "Direchlet/";
@@ -662,6 +713,7 @@ void callback() {
 				  DTmodel = "half_composite/";
 
 			  std::string folder = filePath + DTmodel + "imags/";
+			  std::cout << "saving folder: " << folder << std::endl;
 			  if (!std::filesystem::exists(folder))
 			  {
 				  std::cout << "create directory: " << folder << std::endl;
@@ -679,11 +731,18 @@ void callback() {
   {
 	  updateFieldsInView();
   }
+  if(ImGui::Checkbox("Enable Vector Field", &isShowVec))
+  {
+      updateFieldsInView();
+  }
+  ImGui::SameLine();
   if (ImGui::Checkbox("weighted by Scalar", &isWeightedVec))
   {
 	  updateFieldsInView();
   }
-
+  if(ImGui::Checkbox("Enable Scalar Field", &isShowSca))
+      updateFieldsInView();
+  ImGui::SameLine();
   if (ImGui::Checkbox("normalize", &isNormalize))
   {
 	  updateFieldsInView();
@@ -701,7 +760,8 @@ void callback() {
   ImGui::PopItemWidth();
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
 	if (argc != 2)
 	{
 		std::cout << "please specific the mesh name!" << std::endl;

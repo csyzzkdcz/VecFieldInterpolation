@@ -1,8 +1,9 @@
 
 #include "../../include/Optimization/LineSearch.h"
+#include "../../include/Optimization/PenaltyNewton.h"
 #include "../../include/Optimization/NewtonDescent.h"
 
-void OptSolver::newtonSolver(std::function<double(const Eigen::VectorXd&, Eigen::VectorXd*, Eigen::SparseMatrix<double>*, bool)> objFunc, std::function<double(const Eigen::VectorXd&, const Eigen::VectorXd&)> findMaxStep, Eigen::VectorXd& x0, int numIter, double gradTol, double xTol, double fTol, bool disPlayInfo)
+void OptSolver::penaltyNewtonSolver(std::function<double(const Eigen::VectorXd&, Eigen::VectorXd*, Eigen::SparseMatrix<double>*, bool)> objFunc, std::function<double(const Eigen::VectorXd&, const Eigen::VectorXd&)> findMaxStep, Eigen::VectorXd& x0, int numIter, double gradTol, double xTol, double fTol, double penaltyRatio, bool disPlayInfo)
 {
 	const int DIM = x0.rows();
 	Eigen::VectorXd grad = Eigen::VectorXd::Zero(DIM);
@@ -12,20 +13,44 @@ void OptSolver::newtonSolver(std::function<double(const Eigen::VectorXd&, Eigen:
 	double maxStepSize = 1.0;
 	double reg = 1e-8;
 
-	bool isProj = true;
+	bool isProj = false;
+
+	auto funValWithPenalty = [&](const Eigen::VectorXd& x, Eigen::VectorXd* grad, Eigen::SparseMatrix<double>* hess, bool isProj)
+	{
+	    Eigen::VectorXd deriv;
+	    Eigen::SparseMatrix<double> H;
+
+		double E = objFunc(x, grad ? &deriv : NULL, hess ? &H : NULL, isProj);
+		
+		E += 0.5 * penaltyRatio * (x - x0).dot(x - x0);
+		
+		if(grad)
+		{
+			(*grad) = deriv + penaltyRatio * (x - x0);
+		}
+		if(hess)
+		{
+			Eigen::SparseMatrix<double> idMat = H;
+			idMat.setIdentity();
+			(*hess) = H + penaltyRatio * idMat;
+		}
+		return E;
+	};
+    
+
+    Eigen::VectorXd initX = x0;
 
 	int i = 0;
 	for (; i < numIter; i++)
 	{
 		if(disPlayInfo)
 			std::cout << "\niter: " << i << std::endl;
-		double f = objFunc(x0, &grad, &hessian, isProj);
+		double f = funValWithPenalty(x0, &grad, &hessian, isProj);
+       
+        Eigen::SparseMatrix<double> I(DIM, DIM);
+		I.setIdentity();
 
 		Eigen::SparseMatrix<double> H = hessian;
-		Eigen::SparseMatrix<double> I(DIM, DIM);
-		I.setIdentity();
-		hessian = H;
-
 		Eigen::SimplicialLLT<Eigen::SparseMatrix<double> > solver(hessian);
 
 		while (solver.info() != Eigen::Success)
@@ -48,7 +73,7 @@ void OptSolver::newtonSolver(std::function<double(const Eigen::VectorXd&, Eigen:
 
 		maxStepSize = findMaxStep(x0, delta_x);
 
-		double rate = LineSearch::backtrackingArmijo(x0, grad, delta_x, objFunc, maxStepSize);
+		double rate = LineSearch::backtrackingArmijo(x0, grad, delta_x, funValWithPenalty, maxStepSize);
 
 		if (!isProj)
 		{
@@ -59,7 +84,7 @@ void OptSolver::newtonSolver(std::function<double(const Eigen::VectorXd&, Eigen:
 
 		x0 = x0 + rate * delta_x;
 
-		double fnew = objFunc(x0, &grad, NULL, isProj);
+		double fnew = funValWithPenalty(x0, &grad, NULL, isProj);
 		if (disPlayInfo)
 		{
 			std::cout << "line search rate : " << rate << ", actual hessian : " << !isProj << ", reg = " << reg << std::endl;
@@ -97,33 +122,5 @@ void OptSolver::newtonSolver(std::function<double(const Eigen::VectorXd&, Eigen:
 	if (i >= numIter)
 		std::cout << "terminate with reaching the maximum iteration, with gradient L2-norm = " << grad.norm() << std::endl;
 		
-}
-
-
-void OptSolver::testFuncGradHessian(std::function<double(const Eigen::VectorXd&, Eigen::VectorXd*, Eigen::SparseMatrix<double>*, bool)> objFunc, const Eigen::VectorXd& x0)
-{
-	Eigen::VectorXd dir = x0;
-	dir(0) = 0;
-	dir.setRandom();
-
-	Eigen::VectorXd grad;
-	Eigen::SparseMatrix<double> H;
-
-	double f = objFunc(x0, &grad, &H, false);
-
-	for (int i = 3; i < 10; i++)
-	{
-		double eps = std::pow(0.1, i);
-		Eigen::VectorXd x = x0 + eps * dir;
-		Eigen::VectorXd grad1;
-		double f1 = objFunc(x, &grad1, NULL, false);
-
-		std::cout << "\neps: " << eps << std::endl;
-		std::cout << "energy-gradient: " << (f1 - f) / eps - grad.dot(dir) << std::endl;
-		std::cout << "gradient-hessian: " << ((grad1 - grad) / eps - H * dir).norm() << std::endl;
-
-//		std::cout << "gradient-difference: \n" << (grad1 - grad) / eps << std::endl;
-//		std::cout << "direction-hessian: \n" << H * dir << std::endl;
-	}
 }
 

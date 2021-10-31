@@ -24,4 +24,6 @@ private:
 	Eigen::MatrixXi _meshF;
 	std::map<int, double> _clampDOFs;
 	Eigen::SparseMatrix<double> _projM;
+public:
+	Eigen::VectorXd _mass;
 };
