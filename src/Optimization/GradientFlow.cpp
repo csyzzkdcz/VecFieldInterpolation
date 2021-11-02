@@ -43,13 +43,21 @@ void OptSolver::gradientFlowSolver(std::function<double(const Eigen::VectorXd&, 
             neggrad = -grad;
             delta_x = solver.solve(neggrad);
 
-            Eigen::VectorXd tmpX = x0 + delta_x;
+            if(solver.info() != Eigen::Success)
+            {
+                std::cout << "Eigen solver failed, with residual: " << (hessian * delta_x - neggrad).norm() << std::endl;
+                exit(1);
+            }
 
-            double fnew = objFunc(tmpX, &grad, NULL, false);
+            Eigen::VectorXd tmpX = x0 + delta_x;
+            Eigen::VectorXd tmpgrad;
+
+            double fnew = objFunc(tmpX, &tmpgrad, NULL, false);
             
             if(fnew < f)
             {
                 x0 = tmpX;
+                grad = tmpgrad;
                 if (disPlayInfo)
                 {
                     std::cout << "f_old: " << f << ", f_new: " << fnew << ", grad norm: " << grad.norm() << ", delta x: " << delta_x.norm() << ", delta_f: " << f - fnew << std::endl;
@@ -64,31 +72,25 @@ void OptSolver::gradientFlowSolver(std::function<double(const Eigen::VectorXd&, 
             }
             else
             {
-                if(delta_x.dot(grad) > 0)
-                {
-                    std::cerr << "Error!" << " <d, g> = " << delta_x.dot(grad) << std::endl;
-                    testFuncGradHessian(objFunc, x0);
-                    delta_x = -grad; 
-                }
-                double rate = LineSearch::backtrackingArmijo(x0, grad, delta_x, objFunc, 1.0);
-                if (disPlayInfo)
-                {
-                    std::cout << "not decrease energy, try with line search rate: " << rate << std::endl;
-                }
-                x0 = x0 + rate * delta_x;
-                fnew = objFunc(x0, &grad, NULL, false);
-                if (disPlayInfo)
-                {
-                    std::cout << "f_old: " << f << ", f_new: " << fnew << ", grad norm: " << grad.norm() << ", delta x: " << delta_x.norm() << ", delta_f: " << f - fnew << std::endl;
-                }
-                break;
+                // double rate = LineSearch::backtrackingArmijo(x0, grad, delta_x, objFunc, 1.0);
                 // if (disPlayInfo)
                 // {
-                //     std::cout << "not decrease energy, current reg = " << reg << std::endl;
+                //     std::cout << "not decrease energy, try with line search rate: " << rate << std::endl;
                 // }
-                // reg *= 2;
-                // hessian = theta * H + reg * I;
-                // solver.compute(hessian);
+                // x0 = x0 + rate * delta_x;
+                // fnew = objFunc(x0, &grad, NULL, false);
+                // if (disPlayInfo)
+                // {
+                //     std::cout << "f_old: " << f << ", f_new: " << fnew << ", grad norm: " << grad.norm() << ", delta x: " << delta_x.norm() << ", delta_f: " << f - fnew << std::endl;
+                // }
+                // break;
+                if (disPlayInfo)
+                {
+                    std::cout << "not decrease energy, current reg = " << reg << std::endl;
+                }
+                reg *= 2;
+                hessian = theta * H + reg * I;
+                solver.compute(hessian);
             }
 
         }

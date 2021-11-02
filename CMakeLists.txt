@@ -85,6 +85,7 @@ add_subdirectory("deps/polyscope")
 # Create an executable
 file(GLOB SRCFILES  
     include/*.h
+    include/*.hpp
     include/diffOp/*.h 
     include/EnergyModel/*.h
     include/Optimization/*.h

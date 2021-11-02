@@ -33,6 +33,8 @@
 #include "../include/Optimization/ProjectionScheme.h"
 #include "../include/Optimization/GradientFlow.h"
 #include "../include/Optimization/PenaltyNewton.h"
+#include "../include/json.hpp"
+
 #include <map>
 
 enum DynamicType
@@ -44,6 +46,17 @@ enum DynamicType
 	DT_HALF_ENLARGE = 4,
 	DT_HALF_COMPOSITE = 5
 };
+
+enum MotionType
+{
+	MT_LINEAR = 0,
+	MT_ENTIRE_LINEAR = 1,
+	MT_ROTATION = 2,
+	MT_SINEWAVE = 3,
+	MT_COMPLICATE = 4,
+	MT_SPIRAL = 5
+};
+
 enum OptMethod
 {
     OPT_NT = 0,
@@ -68,6 +81,7 @@ std::vector<Eigen::VectorXd> scalarFieldNormalizedLists;
 
 int bndTypes = 0;
 DynamicType dynamicTypes = DynamicType::DT_Rotate;
+MotionType motionType = MotionType::MT_LINEAR;
 int totalFrames = 100;
 int curFrame = 0;
 float ratio = 0.02;
@@ -78,6 +92,7 @@ bool isWeightedVec = false;
 bool isSaveScreenShot = false;
 bool isShowVec = true;
 bool isShowSca = true;
+bool isSingularityMotion = false;
 OptMethod optMet = OptMethod::OPT_NT;
 
 double scaMin = 0;
@@ -88,13 +103,259 @@ double curMax = 1;
 
 void initFields(Eigen::MatrixXd& mVecField, Eigen::VectorXd& mScalarField)
 {
-	mVecField.setRandom(meshV.rows(), 2);
-	mScalarField.setConstant(meshV.rows(), 1);
+    mVecField.setRandom(meshV.rows(), 2);
+    mScalarField.setConstant(meshV.rows(), 1);
 
-	for (int i = 0; i < meshV.rows(); i++)
+    for (int i = 0; i < meshV.rows(); i++)
+    {
+        double x = meshV(i, 0);
+        double y = meshV(i, 1);
+
+        if (x * x + y * y != 0)
+        {
+            mVecField.row(i) << -y / (x * x + y * y), x / (x * x + y * y);
+        }
+        else
+            mVecField.row(i).setZero();
+    }
+}
+
+bool loadVectorField(std::string vecPath, Eigen::MatrixXd& vecF)
+{
+    int nverts = meshV.rows();
+    std::ifstream vecfile(vecPath);
+
+    if (!vecfile)
+    {
+        Eigen::VectorXd tmpSca;
+        std::cout << "failed to vector fields from files." << vecPath << std::endl;
+        initFields(vecF, tmpSca);
+        return false;
+    }
+    else
+    {
+        //std::cout << "load vector fields from files." << vecPath << std::endl;
+        vecF.resize(nverts, 2);
+        for (int i = 0; i < nverts; i++)
+        {
+            std::string line;
+            std::getline(vecfile, line);
+            std::stringstream ss(line);
+            std::string x, y;
+            ss >> x;
+            ss >> y;
+            vecF.row(i) << std::stod(x), std::stod(y);
+        }
+        return true;
+    }
+}
+
+bool loadScalarField(std::string scaPath, Eigen::VectorXd& scaF)
+{
+    int nverts = meshV.rows();
+    std::ifstream scafile(scaPath);
+
+    if (!scafile)
+    {
+        Eigen::MatrixXd tmpVec;
+        std::cout << "failed to scalar fields from files." << scaPath << std::endl;
+        initFields(tmpVec, scaF);
+        return false;
+    }
+    else
+    {
+        //std::cout << "load scalar fields from files." << scaPath << std::endl;
+        scaF.resize(nverts);
+        for (int i = 0; i < nverts; i++)
+        {
+            std::string line;
+            std::getline(scafile, line);
+            std::stringstream ss(line);
+            std::string x;
+            ss >> x;
+            scaF(i) = std::stod(x);
+        }
+        return true;
+    }
+}
+
+void normalizeCurrentFrame(const Eigen::VectorXd& input, Eigen::VectorXd& normalizedScalarField, double* min = NULL, double* max = NULL)
+{
+    double curMin = input.minCoeff();
+    double curMax = input.maxCoeff();
+
+    if (min)
+        curMin = *min;
+    if (max)
+        curMax = *max;
+
+    if (curMin > curMax)
+    {
+        std::cout << "some errors in the input min and max values." << std::endl;
+
+        curMin = input.minCoeff();
+        curMax = input.maxCoeff();
+    }
+
+    normalizedScalarField = input;
+    for (int i = 0; i < input.size(); i++)
+    {
+        normalizedScalarField(i) = (input(i) - curMin) / (curMax - curMin);
+    }
+
+}
+
+bool loadProblem(const std::string& path)
+{
+    using json = nlohmann::json;
+    std::ifstream inputJson(path);
+    if(!inputJson)
+    {
+        std::cerr << "missing json file in " << path << std::endl;
+        return false;
+    }
+    json jval;
+    inputJson >> jval;
+
+    std::string curFolder = jval["current_folder"];
+
+    std::string meshName = jval["mesh_name"];
+    meshName += curFolder;
+
+    if(!igl::readOBJ(meshName, meshV, meshF))
+    {
+        std::cout << "failed to load mesh " << meshName << std::endl;
+        return false;
+    }
+
+    std::string vecListPrefix = jval["vec_prefix"];
+
+    vecListPrefix += curFolder;
+
+    int i = 0;
+    while (true)
+    {
+        Eigen::MatrixXd tmpVec;
+        std::string fileName = vecListPrefix + "_" + std::to_string(i) + ".txt";
+        bool isLoaded = loadVectorField(fileName, tmpVec);
+        if (isLoaded)
+        {
+            vecFieldLists.push_back(tmpVec);
+            i++;
+        }
+        else
+            break;
+    }
+
+    std::string scaListPrefix = jval["sca_prefix"];
+    scaListPrefix += curFolder;
+
+    int j = 0;
+    double min = std::numeric_limits<double>::infinity();
+    double max = -min;
+
+    while (true)
+    {
+        Eigen::VectorXd tmpVec;
+        std::string fileName = scaListPrefix + "_" + std::to_string(j) + ".txt";
+        bool isLoaded = loadScalarField(fileName, tmpVec);
+        if (isLoaded)
+        {
+            scalarFieldLists.push_back(tmpVec);
+            min = std::min(tmpVec.minCoeff(), min);
+            max = std::max(tmpVec.maxCoeff(), max);
+            j++;
+        }
+        else
+            break;
+    }
+
+    if (i != j)
+    {
+        std::cout << "error in the mismatch!" << std::endl;
+        return false;
+    }
+    else if (i == 0)
+    {
+        std::cout << "no frames are loaded!" << std::endl;
+        return false;
+    }
+    else
+    {
+        std::cout << "total frame: " << i - 1 << std::endl;
+        totalFrames = i - 1;
+
+        for (int n = 0; n <= totalFrames; n++)
+        {
+            Eigen::VectorXd normalizedVec;
+            normalizeCurrentFrame(scalarFieldLists[n], normalizedVec, &min, &max);
+            scalarFieldNormalizedLists.push_back(normalizedVec);
+        }
+
+        vecField = vecFieldLists[0];
+        scalarField = scalarFieldLists[0];
+        scalarFieldNormalized = scalarFieldNormalizedLists[0];
+        scaMin = min;
+        scaMax = max;
+
+        curMin = scalarField.minCoeff();
+        curMax = scalarField.maxCoeff();
+    }
+    // load model type:
+    isSingularityMotion = jval["is_singularity_motion"];
+
+    std::string opM = jval["solver_type"];
+    if(opM == "Newton")
+        optMet = OPT_NT;
+    else if (opM == "Gradient Flow")
+        optMet = OPT_GF;
+    else if (opM == "FEPR")
+        optMet = OPT_FEPR;
+    else if (opM == "Penalty")
+        optMet = OPT_PENALTY;
+    else
+    {
+        std::cerr << "wrong solver type: " << opM << std::endl;
+        return false;
+    }
+
+    penaltyRatio = jval["penalty_ratio"];
+
+    std::string dyType = jval["dynamic_type"];
+    if(dyType == "rotation")
+        dynamicTypes = DT_Rotate;
+    else if (dyType == "enlarge")
+        dynamicTypes = DT_ENLARGE;
+    else if (dyType == "composite")
+        dynamicTypes = DT_COMPOSITE;
+    else if (dyType == "half_rotation")
+        dynamicTypes = DT_HALF_ROTATE;
+    else if (dyType == "half_enlarge")
+        dynamicTypes = DT_HALF_ENLARGE;
+    else if (dyType == "half_composite")
+        dynamicTypes = DT_HALF_COMPOSITE;
+    else
+    {
+        std::cerr << "wrong dynamic type: " << dyType << std::endl;
+        return false;
+    }
+
+}
+
+
+void generateFieldsWithSingularity(Eigen::MatrixXd& mVecField, Eigen::VectorXd& mScalarField, double x0, double y0)
+{
+	int nverts = meshV.rows();
+	mVecField.setRandom(nverts, 2);
+	mScalarField.setConstant(nverts, 1);
+
+	for(int i = 0; i < nverts; i++)
 	{
 		double x = meshV(i, 0);
 		double y = meshV(i, 1);
+
+		x -= x0;
+		y -= y0;
 
 		if (x * x + y * y != 0)
 		{
@@ -103,6 +364,52 @@ void initFields(Eigen::MatrixXd& mVecField, Eigen::VectorXd& mScalarField)
 		else
 			mVecField.row(i).setZero();
 	}
+}
+
+void generateSingularity(double &x0, double &y0, double t, MotionType motion)
+{
+    double r = 0.8;
+    if(motion == MotionType::MT_LINEAR)
+    {
+        x0 = -r + 2 * r * t;
+        y0 = 0;
+    }
+    else if (motion == MotionType::MT_ENTIRE_LINEAR)
+    {
+        x0 = -1.0 + 2 * t;
+        y0 = 0;
+    }
+    else if (motion == MotionType::MT_ROTATION)
+    {
+        double theta = t * 2 * M_PI;
+        x0 = r * std::cos(theta);
+        y0 = r * std::sin(theta);
+    }
+    else if (motion == MotionType::MT_SINEWAVE)
+    {
+        x0 = -r + 2 * r * t;
+        y0 = r * std::sin(M_PI / r * x0);
+    }
+    else if (motion == MotionType::MT_COMPLICATE)
+    {
+        double theta = t * 4 * M_PI;
+        x0 = r * std::cos(theta);
+
+        double p = -r + 2 * r * t;
+        y0 = r * std::sin(4 * M_PI / r * p);
+    }
+    else if (motion == MotionType::MT_SPIRAL)
+    {
+        double curR = (1 - t) * r;
+        double theta = t * 6 * M_PI;
+        x0 = curR * std::cos(theta);
+        y0 = curR * std::sin(theta);
+    }
+    else
+    {
+        std::cout << "undefined motion type!" << std::endl;
+        exit(1);
+    }
 }
 
 void updateFieldsInView()
@@ -284,64 +591,7 @@ void manipulateVecField(const Eigen::MatrixXd& input, Eigen::MatrixXd& output, D
 		
 }
 
-bool loadVectorField(std::string vecPath, Eigen::MatrixXd& vecF)
-{
-	int nverts = meshV.rows();
-	std::ifstream vecfile(vecPath);
 
-	if (!vecfile)
-	{
-		Eigen::VectorXd tmpSca;
-		std::cout << "failed to vector fields from files." << vecPath << std::endl;
-		initFields(vecF, tmpSca);
-		return false;
-	}
-	else
-	{
-		//std::cout << "load vector fields from files." << vecPath << std::endl;
-		vecF.resize(nverts, 2);
-		for (int i = 0; i < nverts; i++)
-		{
-			std::string line;
-			std::getline(vecfile, line);
-			std::stringstream ss(line);
-			std::string x, y;
-			ss >> x;
-			ss >> y;
-			vecF.row(i) << std::stod(x), std::stod(y);
-		}
-		return true;
-	}
-}
-
-bool loadScalarField(std::string scaPath, Eigen::VectorXd& scaF)
-{
-	int nverts = meshV.rows();
-	std::ifstream scafile(scaPath);
-
-	if (!scafile)
-	{
-		Eigen::MatrixXd tmpVec;
-		std::cout << "failed to scalar fields from files." << scaPath << std::endl;
-		initFields(tmpVec, scaF);
-		return false;
-	}
-	else
-	{
-		//std::cout << "load scalar fields from files." << scaPath << std::endl;
-		scaF.resize(nverts);
-		for (int i = 0; i < nverts; i++)
-		{
-			std::string line;
-			std::getline(scafile, line);
-			std::stringstream ss(line);
-			std::string x;
-			ss >> x;
-			scaF(i) = std::stod(x);
-		}
-		return true;
-	}
-}
 
 void setBndDynamicTypesFromData(std::string dataPath)
 {
@@ -354,7 +604,7 @@ void setBndDynamicTypesFromData(std::string dataPath)
 	index = dataPath.rfind("/");
 	std::string optTypeStr = dataPath.substr(index + 1, dataPath.size() - 1);
 	std::cout << "optimaztion method: " << optTypeStr << std::endl;
-	
+
 	std::string dymodeltype = dataPath.substr(index + 1, dataPath.size() - 1);
 	std::cout << "dynamic type: " << dymodeltype << std::endl;
 
@@ -383,32 +633,73 @@ void setBndDynamicTypesFromData(std::string dataPath)
 }
 
 
-void normalizeCurrentFrame(const Eigen::VectorXd& input, Eigen::VectorXd& normalizedScalarField, double* min = NULL, double* max = NULL)
+
+
+void getOutputFolder(std::string &folderPath)
 {
-	double curMin = input.minCoeff();
-	double curMax = input.maxCoeff();
+    std::string curPath = std::filesystem::current_path();
+    std::cout << "current path: " << curPath << std::endl;
+    std::string filePath = curPath + "/results/" + modelName + "/" + std::to_string(totalFrames) + "Steps/";
 
-	if (min)
-		curMin = *min;
-	if (max)
-		curMax = *max;
+    vecFieldLists.clear();
+    scalarFieldLists.clear();
+    scalarFieldNormalizedLists.clear();
 
-	if (curMin > curMax)
-	{
-		std::cout << "some errors in the input min and max values." << std::endl;
+    if (bndTypes == 0)
+        filePath += "Direchlet/";
+    else
+        filePath += "ConstProj/";
 
-		curMin = input.minCoeff();
-		curMax = input.maxCoeff();
-	}
+    std::string DTmodel = "";
 
-	normalizedScalarField = input;
-	for (int i = 0; i < input.size(); i++)
-	{
-		normalizedScalarField(i) = (input(i) - curMin) / (curMax - curMin);
-	}
+    if(!isSingularityMotion)
+    {
+        if (dynamicTypes == DynamicType::DT_Rotate)
+            DTmodel = "boundary_motion/rotate/";
+        else if (dynamicTypes == DynamicType::DT_ENLARGE)
+            DTmodel = "boundary_motion/enlarge/";
+        else if (dynamicTypes == DynamicType::DT_COMPOSITE)
+            DTmodel = "boundary_motion/composite/";
+        else if (dynamicTypes == DynamicType::DT_HALF_ROTATE)
+            DTmodel = "boundary_motion/half_rotate/";
+        else if (dynamicTypes == DynamicType::DT_HALF_ENLARGE)
+            DTmodel = "boundary_motion/half_enlarge/";
+        else
+            DTmodel = "boundary_motion/half_composite/";
+    }
+    else
+    {
+        if(motionType == MotionType::MT_LINEAR)
+            DTmodel = "singularity_motion/linear/";
+        else if (motionType == MotionType::MT_ENTIRE_LINEAR)
+            DTmodel = "singularity_motion/linear_entire/";
+        else if (motionType == MotionType::MT_ROTATION)
+            DTmodel = "singularity_motion/rotation/";
+        else if (motionType == MotionType::MT_SINEWAVE)
+            DTmodel = "singularity_motion/sin/";
+        else if (motionType == MotionType::MT_COMPLICATE)
+            DTmodel = "singularity_motion/complicate/";
+        else if (motionType == MotionType::MT_SPIRAL)
+            DTmodel = "singularity_motion/spiral/";
+        else
+        {
+            std::cout << "undefined motion type!" << std::endl;
+            exit(1);
+        }
+    }
 
+
+    std::string optMT = "";
+    if(optMet == OptMethod::OPT_NT)
+        optMT = "Newton/";
+    else if (optMet == OptMethod::OPT_FEPR)
+        optMT = "FEPR/";
+    else if (optMet == OptMethod::OPT_GF)
+        optMT = "GF_" + std::to_string(GFTheta) + "/";
+    else
+        optMT = "Penalty_" + std::to_string(penaltyRatio) + "/";
+    folderPath = filePath + DTmodel + optMT;
 }
-
 
 void callback() {
   ImGui::PushItemWidth(100);
@@ -529,6 +820,8 @@ void callback() {
   // scalar fields
   ImGui::Combo("bnd types", (int*)&bndTypes, "Direchlet\0Const Projection\0\0");
   ImGui::Combo("dynamic types", (int*)&dynamicTypes, "rotate\0enlarge\0composite\0half rotate\0half enlarge\0half composite\0\0");
+  ImGui::Checkbox("Use singularity motion", &isSingularityMotion);
+  ImGui::Combo("Motion types", (int *)&motionType, "linear\0entire linear\0rotate\0sin-wave\0complicate\0spiral\0\0");
   ImGui::Combo("Opt types", (int*)&optMet, "Newton\0FEPR\0GF\0Penalty\0\0");
   ImGui::InputDouble("GF theta", &GFTheta);
   ImGui::SameLine();
@@ -570,6 +863,10 @@ void callback() {
 	  std::cout << "current path: " << curPath << std::endl;
 	  std::string filePath = curPath + "/results/" + modelName + "/" + std::to_string(numSteps) + "Steps/";
 
+	  vecFieldLists.clear();
+	  scalarFieldLists.clear();
+	  scalarFieldNormalizedLists.clear();
+
 	  if (bndTypes == 0)
 		  filePath += "Direchlet/";
 	  else
@@ -577,18 +874,42 @@ void callback() {
 
 	  std::string DTmodel = "";
 
-	  if (dynamicTypes == DynamicType::DT_Rotate)
-		  DTmodel = "rotate/";
-	  else if (dynamicTypes == DynamicType::DT_ENLARGE)
-		  DTmodel = "enlarge/";
-	  else if (dynamicTypes == DynamicType::DT_COMPOSITE)
-		  DTmodel = "composite/";
-	  else if (dynamicTypes == DynamicType::DT_HALF_ROTATE)
-		  DTmodel = "half_rotate/";
-	  else if (dynamicTypes == DynamicType::DT_HALF_ENLARGE)
-		  DTmodel = "half_enlarge/";
+	  if(!isSingularityMotion)
+	  {
+	      if (dynamicTypes == DynamicType::DT_Rotate)
+	          DTmodel = "boundary_motion/rotate/";
+	      else if (dynamicTypes == DynamicType::DT_ENLARGE)
+	          DTmodel = "boundary_motion/enlarge/";
+	      else if (dynamicTypes == DynamicType::DT_COMPOSITE)
+	          DTmodel = "boundary_motion/composite/";
+	      else if (dynamicTypes == DynamicType::DT_HALF_ROTATE)
+	          DTmodel = "boundary_motion/half_rotate/";
+	      else if (dynamicTypes == DynamicType::DT_HALF_ENLARGE)
+	          DTmodel = "boundary_motion/half_enlarge/";
+	      else
+	          DTmodel = "boundary_motion/half_composite/";
+	  }
 	  else
-		  DTmodel = "half_composite/";
+	  {
+	      if(motionType == MotionType::MT_LINEAR)
+	          DTmodel = "singularity_motion/linear/";
+	      else if (motionType == MotionType::MT_ENTIRE_LINEAR)
+	          DTmodel = "singularity_motion/linear_entire/";
+	      else if (motionType == MotionType::MT_ROTATION)
+	          DTmodel = "singularity_motion/rotation/";
+	      else if (motionType == MotionType::MT_SINEWAVE)
+	          DTmodel = "singularity_motion/sin/";
+	      else if (motionType == MotionType::MT_COMPLICATE)
+	          DTmodel = "singularity_motion/complicate/";
+	      else if (motionType == MotionType::MT_SPIRAL)
+	          DTmodel = "singularity_motion/spiral/";
+	      else
+	      {
+	          std::cout << "undefined motion type!" << std::endl;
+	          exit(1);
+	      }
+	  }
+
 
 	  std::string optMT = "";
 	  if(optMet == OptMethod::OPT_NT)
@@ -623,13 +944,24 @@ void callback() {
 		  double theta = 1.0 / numSteps * 2 * M_PI * i;
 		  std::map<int, double> clampedDOFs;
 		  Eigen::MatrixXd rotatedVecField;
-		  manipulateVecField(initVecField, rotatedVecField, dynamicTypes, theta, r);
+		  if(!isSingularityMotion)
+		    manipulateVecField(initVecField, rotatedVecField, dynamicTypes, theta, r);
+		  else
+		  {
+		      double t = i * 1.0 / numSteps;
+		      double x0, y0;
+              generateSingularity(x0, y0, t, motionType);
+              std::cout << "x0: " << x0 << ", y0: " << y0 << std::endl;
+              generateFieldsWithSingularity(rotatedVecField, initScalarField, x0, y0);
+		  }
 		  getClampedDOFs(clampedDOFs, rotatedVecField, initScalarField);
 
 		  if(i == 0)
 		      optimizeVecField(clampedDOFs, curVecField, curScalarField, OptMethod::OPT_NT);
 		  else
 		      optimizeVecField(clampedDOFs, curVecField, curScalarField, optMet);
+//		  curVecField = rotatedVecField;
+//		  curScalarField = initScalarField;
 		  
 		  std::string vecPath = folder + "vecField_" + std::to_string(i) + ".csv";
 		  std::ofstream vecFile(vecPath);
@@ -641,6 +973,7 @@ void callback() {
 		  vecPath = folder + "vecField_" + std::to_string(i) + ".txt";
 		  vecFile = std::ofstream(vecPath);
 		  vecFile << curVecField << std::endl;
+		  vecFieldLists.push_back(curVecField);
 
 
 		  std::string magPath = folder + "magField_" + std::to_string(i) + ".csv";
@@ -651,6 +984,10 @@ void callback() {
 		  magPath = folder + "magField_" + std::to_string(i) + ".txt";
 		  magFile = std::ofstream(magPath);
 		  magFile << curScalarField << std::endl;
+		  scalarFieldLists.push_back(curScalarField);
+
+		  normalizeCurrentFrame(scalarField, scalarFieldNormalized);
+		  scalarFieldNormalizedLists.push_back(scalarFieldNormalized);
 
 	  }
 	  vecField = curVecField;
@@ -784,7 +1121,6 @@ int main(int argc, char** argv)
 
 	// Read the mesh
 	igl::readOBJ(filename, meshV, meshF);
-
 	
 	// Register the mesh with Polyscope
 	polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
