@@ -101,6 +101,10 @@ double scaMax = 1;
 double curMin = 0;
 double curMax = 1;
 
+std::string savingFolder;
+std::string exeFolder;
+
+
 void initFields(Eigen::MatrixXd& mVecField, Eigen::VectorXd& mScalarField)
 {
     mVecField.setRandom(meshV.rows(), 2);
@@ -207,6 +211,10 @@ void normalizeCurrentFrame(const Eigen::VectorXd& input, Eigen::VectorXd& normal
 
 bool loadProblem(const std::string& path)
 {
+	vecFieldLists.clear();
+	scalarFieldLists.clear();
+	scalarFieldNormalizedLists.clear();
+
     using json = nlohmann::json;
     std::ifstream inputJson(path);
     if(!inputJson)
@@ -220,7 +228,7 @@ bool loadProblem(const std::string& path)
     std::string curFolder = jval["current_folder"];
 
     std::string meshName = jval["mesh_name"];
-    meshName += curFolder;
+    meshName = curFolder + meshName;
 
     if(!igl::readOBJ(meshName, meshV, meshF))
     {
@@ -230,7 +238,7 @@ bool loadProblem(const std::string& path)
 
     std::string vecListPrefix = jval["vec_prefix"];
 
-    vecListPrefix += curFolder;
+    vecListPrefix = curFolder + vecListPrefix;
 
     int i = 0;
     while (true)
@@ -248,7 +256,7 @@ bool loadProblem(const std::string& path)
     }
 
     std::string scaListPrefix = jval["sca_prefix"];
-    scaListPrefix += curFolder;
+    scaListPrefix = curFolder + scaListPrefix;
 
     int j = 0;
     double min = std::numeric_limits<double>::infinity();
@@ -320,6 +328,7 @@ bool loadProblem(const std::string& path)
     }
 
     penaltyRatio = jval["penalty_ratio"];
+	GFTheta = jval["gradient_flow_theta"];
 
     std::string dyType = jval["dynamic_type"];
     if(dyType == "rotation")
@@ -339,6 +348,110 @@ bool loadProblem(const std::string& path)
         std::cerr << "wrong dynamic type: " << dyType << std::endl;
         return false;
     }
+
+	std::string mType = jval["motion_type"];
+	if (mType == "linear")
+		motionType = MT_LINEAR;
+	else if (mType == "entire_linear")
+		motionType = MT_ENTIRE_LINEAR;
+	else if (mType == "rotation")
+		motionType = MT_ROTATION;
+	else if (mType == "sin_wave")
+		motionType = MT_SINEWAVE;
+	else if (mType == "composite")
+		motionType = MT_COMPLICATE;
+	else if (mType == "spiral")
+		motionType = MT_SPIRAL;
+	else
+	{
+		std::cerr << "wrong motion type: " << mType << std::endl;
+		return false;
+	}
+
+	std::string bType = jval["bnd_type"];
+	if (bType == "Direchlet")
+		bndTypes = 0;
+	else if (bType == "const_projection")
+		bndTypes = 1;
+	else
+	{
+		std::cerr << "wrong bnd tyoe: " << bType << std::endl;
+		return false;
+	}
+
+	return true;
+}
+
+bool saveProblem(const std::string& folder)
+{
+	using json = nlohmann::json;
+	json jval;
+	jval["current_folder"] = folder;
+	jval["mesh_name"] = modelName + ".obj";
+	igl::writeOBJ(folder + modelName + ".obj", meshV, meshF);
+	
+	jval["vec_prefix"] = "/sims/vecField";
+	jval["sca_prefix"] = "/sims/scaField";
+
+	jval["is_singularity_motion"] = isSingularityMotion;
+	std::string sType = "";
+	
+	if (optMet == OPT_NT)
+		sType = "Newton";
+	else if (optMet == OPT_GF)
+		sType = "Gradient Flow";
+	else if (optMet == OPT_FEPR)
+		sType = "FEPR";
+	else if (optMet == OPT_PENALTY)
+		sType = "Penalty";
+	jval["solver_type"] = sType;
+
+	jval["penalty_ratio"] = penaltyRatio;
+	jval["gradient_flow_theta"] = GFTheta;
+
+	std::string dyType = "";
+	if (dynamicTypes == DT_Rotate)
+		dyType = "rotation";
+	else if (dynamicTypes == DT_ENLARGE)
+		dyType = "enlarge";
+	else if (dynamicTypes == DT_COMPOSITE)
+		dyType = "composite";
+	else if (dynamicTypes == DT_HALF_ROTATE)
+		dyType = "half_rotation";
+	else if (dynamicTypes == DT_HALF_ENLARGE)
+		dyType = "half_enlarge";
+	else if (dynamicTypes == DT_HALF_COMPOSITE)
+		dyType = "half_composite";
+	
+	jval["dynamic_type"] = dyType;
+
+	std::string mType = ""; 
+	if (motionType == MT_LINEAR)
+		mType = "linear";
+	else if (motionType == MT_ENTIRE_LINEAR)
+		mType = "entire_linear";
+	else if (motionType == MT_ROTATION)
+		mType = "rotation";
+	else if (motionType == MT_SINEWAVE)
+		mType = "sin_wave";
+	else if (motionType == MT_COMPLICATE)
+		mType = "composite";
+	else if (motionType == MT_SPIRAL)
+		mType = "spiral";
+
+	jval["motion_type"] = mType;
+
+
+	std::string bType = "";
+	if (bndTypes == 0)
+		bType = "Direchlet";
+	else if (bndTypes == 1)
+		bType = "const_projection";
+	jval["bnd_type"] = bType;
+	
+	std::ofstream o(folder + "/data.json");
+	o << std::setw(4) << jval << std::endl;
+	return true;
 
 }
 
@@ -593,218 +706,92 @@ void manipulateVecField(const Eigen::MatrixXd& input, Eigen::MatrixXd& output, D
 
 
 
-void setBndDynamicTypesFromData(std::string dataPath)
+void updateSavingFolder(const std::string& parentFolder)
 {
-	std::replace(dataPath.begin(), dataPath.end(), '\\', '/'); // handle the backslash issue for windows
-	std::cout << "after replacement, path: " << dataPath << std::endl;
+	std::string filePath = parentFolder + "/results/" + modelName + "/" + std::to_string(totalFrames) + "Steps/";
 
-	int index = dataPath.rfind("/");
-	dataPath = dataPath.substr(0, index);
-
-	index = dataPath.rfind("/");
-	std::string optTypeStr = dataPath.substr(index + 1, dataPath.size() - 1);
-	std::cout << "optimaztion method: " << optTypeStr << std::endl;
-
-	std::string dymodeltype = dataPath.substr(index + 1, dataPath.size() - 1);
-	std::cout << "dynamic type: " << dymodeltype << std::endl;
-
-	dataPath = dataPath.substr(0, index);
-	index = dataPath.rfind("/");
-	std::string bndTypeString = dataPath.substr(index + 1, dataPath.size() - 1);
-	std::cout << "bndTypeString: " << bndTypeString << std::endl;
-
-	if (bndTypeString == "Direchlet")
-		bndTypes = 0;
+	if (bndTypes == 0)
+		filePath += "Direchlet/";
 	else
-		bndTypes = 1;
+		filePath += "ConstProj/";
 
-	if (dymodeltype == "rotate")
-		dynamicTypes = DynamicType::DT_Rotate;
-	else if (dymodeltype == "enlarge")
-		dynamicTypes = DynamicType::DT_ENLARGE;
-	else if (dymodeltype == "composite")
-		dynamicTypes = DynamicType::DT_COMPOSITE;
-	else if (dymodeltype == "half_rotate")
-		dynamicTypes = DynamicType::DT_HALF_ROTATE;
-	else if (dymodeltype == "half_enlarge")
-		dynamicTypes = DynamicType::DT_HALF_ENLARGE;
+	std::string DTmodel = "";
+
+	if (!isSingularityMotion)
+	{
+		if (dynamicTypes == DynamicType::DT_Rotate)
+			DTmodel = "boundary_motion/rotate/";
+		else if (dynamicTypes == DynamicType::DT_ENLARGE)
+			DTmodel = "boundary_motion/enlarge/";
+		else if (dynamicTypes == DynamicType::DT_COMPOSITE)
+			DTmodel = "boundary_motion/composite/";
+		else if (dynamicTypes == DynamicType::DT_HALF_ROTATE)
+			DTmodel = "boundary_motion/half_rotate/";
+		else if (dynamicTypes == DynamicType::DT_HALF_ENLARGE)
+			DTmodel = "boundary_motion/half_enlarge/";
+		else
+			DTmodel = "boundary_motion/half_composite/";
+	}
 	else
-		dynamicTypes = DynamicType::DT_HALF_COMPOSITE;
-}
+	{
+		if (motionType == MotionType::MT_LINEAR)
+			DTmodel = "singularity_motion/linear/";
+		else if (motionType == MotionType::MT_ENTIRE_LINEAR)
+			DTmodel = "singularity_motion/linear_entire/";
+		else if (motionType == MotionType::MT_ROTATION)
+			DTmodel = "singularity_motion/rotation/";
+		else if (motionType == MotionType::MT_SINEWAVE)
+			DTmodel = "singularity_motion/sin/";
+		else if (motionType == MotionType::MT_COMPLICATE)
+			DTmodel = "singularity_motion/complicate/";
+		else if (motionType == MotionType::MT_SPIRAL)
+			DTmodel = "singularity_motion/spiral/";
+		else
+		{
+			std::cout << "undefined motion type!" << std::endl;
+			exit(1);
+		}
+	}
 
 
-
-
-void getOutputFolder(std::string &folderPath)
-{
-    std::string curPath = std::filesystem::current_path();
-    std::cout << "current path: " << curPath << std::endl;
-    std::string filePath = curPath + "/results/" + modelName + "/" + std::to_string(totalFrames) + "Steps/";
-
-    vecFieldLists.clear();
-    scalarFieldLists.clear();
-    scalarFieldNormalizedLists.clear();
-
-    if (bndTypes == 0)
-        filePath += "Direchlet/";
-    else
-        filePath += "ConstProj/";
-
-    std::string DTmodel = "";
-
-    if(!isSingularityMotion)
-    {
-        if (dynamicTypes == DynamicType::DT_Rotate)
-            DTmodel = "boundary_motion/rotate/";
-        else if (dynamicTypes == DynamicType::DT_ENLARGE)
-            DTmodel = "boundary_motion/enlarge/";
-        else if (dynamicTypes == DynamicType::DT_COMPOSITE)
-            DTmodel = "boundary_motion/composite/";
-        else if (dynamicTypes == DynamicType::DT_HALF_ROTATE)
-            DTmodel = "boundary_motion/half_rotate/";
-        else if (dynamicTypes == DynamicType::DT_HALF_ENLARGE)
-            DTmodel = "boundary_motion/half_enlarge/";
-        else
-            DTmodel = "boundary_motion/half_composite/";
-    }
-    else
-    {
-        if(motionType == MotionType::MT_LINEAR)
-            DTmodel = "singularity_motion/linear/";
-        else if (motionType == MotionType::MT_ENTIRE_LINEAR)
-            DTmodel = "singularity_motion/linear_entire/";
-        else if (motionType == MotionType::MT_ROTATION)
-            DTmodel = "singularity_motion/rotation/";
-        else if (motionType == MotionType::MT_SINEWAVE)
-            DTmodel = "singularity_motion/sin/";
-        else if (motionType == MotionType::MT_COMPLICATE)
-            DTmodel = "singularity_motion/complicate/";
-        else if (motionType == MotionType::MT_SPIRAL)
-            DTmodel = "singularity_motion/spiral/";
-        else
-        {
-            std::cout << "undefined motion type!" << std::endl;
-            exit(1);
-        }
-    }
-
-
-    std::string optMT = "";
-    if(optMet == OptMethod::OPT_NT)
-        optMT = "Newton/";
-    else if (optMet == OptMethod::OPT_FEPR)
-        optMT = "FEPR/";
-    else if (optMet == OptMethod::OPT_GF)
-        optMT = "GF_" + std::to_string(GFTheta) + "/";
-    else
-        optMT = "Penalty_" + std::to_string(penaltyRatio) + "/";
-    folderPath = filePath + DTmodel + optMT;
+	std::string optMT = "";
+	if (optMet == OptMethod::OPT_NT)
+		optMT = "Newton/";
+	else if (optMet == OptMethod::OPT_FEPR)
+		optMT = "FEPR/";
+	else if (optMet == OptMethod::OPT_GF)
+		optMT = "GF_" + std::to_string(GFTheta) + "/";
+	else
+		optMT = "Penalty_" + std::to_string(penaltyRatio) + "/";
+	savingFolder = filePath + DTmodel + optMT;
+	std::cout << "saving folder: " << savingFolder << std::endl;
 }
 
 void callback() {
   ImGui::PushItemWidth(100);
   if (ImGui::Button("Import Data List"))
   {
-	  scalarFieldLists.clear();
-	  scalarFieldNormalizedLists.clear();
-	  vecFieldLists.clear();
-
-	  std::string vecPath = igl::file_dialog_open();
-	  
-	  int index = vecPath.rfind("_");
-	  std::string vecPrefix = vecPath.substr(0, index);
-	  std::cout << "vector fields prefix is: " << vecPrefix << std::endl;
-
-	  setBndDynamicTypesFromData(vecPath);
-
-	  int i = 0;
-	  while (true)
+	  std::string jsonPath = igl::file_dialog_open();
+	  if (!loadProblem(jsonPath))
 	  {
-		  Eigen::MatrixXd tmpVec;
-		  std::string fileName = vecPrefix + "_" + std::to_string(i) + ".txt";
-		  bool isLoaded = loadVectorField(fileName, tmpVec);
-		  if (isLoaded)
-		  {
-			  vecFieldLists.push_back(tmpVec);
-			  i++;
-		  }
-		  else
-			  break;
+		  std::cout << "load problem error! " << std::endl;
+		  exit(1);
 	  }
-
-	  std::string scaPath = igl::file_dialog_open();
-	  int index1 = scaPath.rfind("_");
-	  std::string scaPrefix = scaPath.substr(0, index1);
-	  std::cout << "scalar fields prefix is: " << scaPrefix << std::endl;
-
-	  int j = 0;
-	  double min = std::numeric_limits<double>::infinity();
-	  double max = -min;
-
-	  while (true)
-	  {
-		  Eigen::VectorXd tmpVec;
-		  std::string fileName = scaPrefix + "_" + std::to_string(j) + ".txt";
-		  bool isLoaded = loadScalarField(fileName, tmpVec);
-		  if (isLoaded)
-		  {
-			  scalarFieldLists.push_back(tmpVec);
-			  min = std::min(tmpVec.minCoeff(), min);
-			  max = std::max(tmpVec.maxCoeff(), max);
-			  j++;
-		  }
-		  else
-			  break;
-	  }
-
-	  if (i != j)
-	  {
-		  std::cout << "error in the mismatch !" << std::endl;
-	  }
-	  else
-	  {
-		  std::cout << "total frame: " << i - 1 << std::endl;
-		  totalFrames = i - 1;
-
-		  for (int n = 0; n <= totalFrames; n++)
-		  {
-			  Eigen::VectorXd normalizedVec;
-			  normalizeCurrentFrame(scalarFieldLists[n], normalizedVec, &min, &max);
-			  scalarFieldNormalizedLists.push_back(normalizedVec);
-		  }
-
-		  vecField = vecFieldLists[0];
-		  scalarField = scalarFieldLists[0];
-		  scalarFieldNormalized = scalarFieldNormalizedLists[0];
-		  scaMin = min;
-		  scaMax = max;
-
-		  curMin = scalarField.minCoeff();
-		  curMax = scalarField.maxCoeff();
-
-		  updateFieldsInView();
-	  }
+	  updateFieldsInView();
+	  updateSavingFolder(exeFolder);
   }
 
 
   if (ImGui::Button("Import Data"))
   {
-	  std::string vecPath = igl::file_dialog_open();
-	  loadVectorField(vecPath, vecField);
-
-	  setBndDynamicTypesFromData(vecPath);
-
-
-	  std::string scaPath = igl::file_dialog_open();
-	  loadScalarField(scaPath, scalarField);
-	  normalizeCurrentFrame(scalarField, scalarFieldNormalized);
-	  scaMin = scalarField.minCoeff();
-	  scaMax = scalarField.maxCoeff();
-
-	  curMin = scalarField.minCoeff();
-	  curMax = scalarField.maxCoeff();
-
+	  std::string jsonPath = igl::file_dialog_open();
+	  if (!loadProblem(jsonPath))
+	  {
+		  std::cout << "load problem error! " << std::endl;
+		  exit(1);
+	  }
 	  updateFieldsInView();
+	  updateSavingFolder(exeFolder);
   }
   ImGui::SameLine();
   if (ImGui::Button("Export Data"))
@@ -818,17 +805,25 @@ void callback() {
 	  scaFile << scalarField << std::endl;
   }
   // scalar fields
-  ImGui::Combo("bnd types", (int*)&bndTypes, "Direchlet\0Const Projection\0\0");
-  ImGui::Combo("dynamic types", (int*)&dynamicTypes, "rotate\0enlarge\0composite\0half rotate\0half enlarge\0half composite\0\0");
-  ImGui::Checkbox("Use singularity motion", &isSingularityMotion);
-  ImGui::Combo("Motion types", (int *)&motionType, "linear\0entire linear\0rotate\0sin-wave\0complicate\0spiral\0\0");
-  ImGui::Combo("Opt types", (int*)&optMet, "Newton\0FEPR\0GF\0Penalty\0\0");
-  ImGui::InputDouble("GF theta", &GFTheta);
+  if (ImGui::Combo("bnd types", (int*)&bndTypes, "Direchlet\0Const Projection\0\0"))
+	  updateSavingFolder(exeFolder);
+  if(ImGui::Combo("dynamic types", (int*)&dynamicTypes, "rotate\0enlarge\0composite\0half rotate\0half enlarge\0half composite\0\0"))
+	  updateSavingFolder(exeFolder);
+  if(ImGui::Checkbox("Use singularity motion", &isSingularityMotion))
+	  updateSavingFolder(exeFolder);
+  if(ImGui::Combo("Motion types", (int *)&motionType, "linear\0entire linear\0rotate\0sin-wave\0complicate\0spiral\0\0"))
+	  updateSavingFolder(exeFolder);
+  if(ImGui::Combo("Opt types", (int*)&optMet, "Newton\0FEPR\0GF\0Penalty\0\0"))
+	  updateSavingFolder(exeFolder);
+  if(ImGui::InputDouble("GF theta", &GFTheta))
+	  updateSavingFolder(exeFolder);
   ImGui::SameLine();
-  ImGui::InputDouble("Penalty ratio", &penaltyRatio);
+  if(ImGui::InputDouble("Penalty ratio", &penaltyRatio))
+	  updateSavingFolder(exeFolder);
 
   if (ImGui::Button("update vector field"))
   {
+	  saveProblem(savingFolder);
 	  std::map<int, double> clampedDOFs;
 	  getClampedDOFs(clampedDOFs, vecField, scalarField);
 	  optimizeVecField(clampedDOFs, vecField, scalarField, OptMethod::OPT_NT);
@@ -841,7 +836,6 @@ void callback() {
 	  curMax = scalarField.maxCoeff();
 
 	  updateFieldsInView();
-	  
   }
   if (ImGui::Button("reset vector field"))
   {
@@ -859,68 +853,7 @@ void callback() {
   if (ImGui::Button("update the dynamic vector field"))
   {
 	  int numSteps = totalFrames;
-	  std::string curPath = std::filesystem::current_path();
-	  std::cout << "current path: " << curPath << std::endl;
-	  std::string filePath = curPath + "/results/" + modelName + "/" + std::to_string(numSteps) + "Steps/";
-
-	  vecFieldLists.clear();
-	  scalarFieldLists.clear();
-	  scalarFieldNormalizedLists.clear();
-
-	  if (bndTypes == 0)
-		  filePath += "Direchlet/";
-	  else
-		  filePath += "ConstProj/";
-
-	  std::string DTmodel = "";
-
-	  if(!isSingularityMotion)
-	  {
-	      if (dynamicTypes == DynamicType::DT_Rotate)
-	          DTmodel = "boundary_motion/rotate/";
-	      else if (dynamicTypes == DynamicType::DT_ENLARGE)
-	          DTmodel = "boundary_motion/enlarge/";
-	      else if (dynamicTypes == DynamicType::DT_COMPOSITE)
-	          DTmodel = "boundary_motion/composite/";
-	      else if (dynamicTypes == DynamicType::DT_HALF_ROTATE)
-	          DTmodel = "boundary_motion/half_rotate/";
-	      else if (dynamicTypes == DynamicType::DT_HALF_ENLARGE)
-	          DTmodel = "boundary_motion/half_enlarge/";
-	      else
-	          DTmodel = "boundary_motion/half_composite/";
-	  }
-	  else
-	  {
-	      if(motionType == MotionType::MT_LINEAR)
-	          DTmodel = "singularity_motion/linear/";
-	      else if (motionType == MotionType::MT_ENTIRE_LINEAR)
-	          DTmodel = "singularity_motion/linear_entire/";
-	      else if (motionType == MotionType::MT_ROTATION)
-	          DTmodel = "singularity_motion/rotation/";
-	      else if (motionType == MotionType::MT_SINEWAVE)
-	          DTmodel = "singularity_motion/sin/";
-	      else if (motionType == MotionType::MT_COMPLICATE)
-	          DTmodel = "singularity_motion/complicate/";
-	      else if (motionType == MotionType::MT_SPIRAL)
-	          DTmodel = "singularity_motion/spiral/";
-	      else
-	      {
-	          std::cout << "undefined motion type!" << std::endl;
-	          exit(1);
-	      }
-	  }
-
-
-	  std::string optMT = "";
-	  if(optMet == OptMethod::OPT_NT)
-	      optMT = "Newton/";
-	  else if (optMet == OptMethod::OPT_FEPR)
-	      optMT = "FEPR/";
-	  else if (optMet == OptMethod::OPT_GF)
-	      optMT = "GF_" + std::to_string(GFTheta) + "/";
-	  else
-	      optMT = "Penalty_" + std::to_string(penaltyRatio) + "/";
-	  std::string folder = filePath + DTmodel + optMT;
+	  std::string folder = savingFolder + "/sims/";
 	  if (!std::filesystem::exists(folder))
 	  {
 		  std::cout << "create directory: " << folder << std::endl;
@@ -935,6 +868,8 @@ void callback() {
 	  initFields(initVecField, initScalarField);
 	  curVecField = initVecField;
 	  curScalarField = initScalarField;
+
+	  saveProblem(savingFolder);
 
 	  for (int i = 0; i <= numSteps; i++)
 	  {
@@ -963,25 +898,25 @@ void callback() {
 //		  curVecField = rotatedVecField;
 //		  curScalarField = initScalarField;
 		  
-		  std::string vecPath = folder + "vecField_" + std::to_string(i) + ".csv";
+		  std::string vecPath = folder + "/vecField_" + std::to_string(i) + ".csv";
 		  std::ofstream vecFile(vecPath);
 		  for (int i = 0; i < curVecField.rows(); i++)
 		  {
 			  vecFile << curVecField(i, 0) << ",\t" << curVecField(i, 1) << ",\t" << 0 << std::endl;
 		  }
 
-		  vecPath = folder + "vecField_" + std::to_string(i) + ".txt";
+		  vecPath = folder + "/vecField_" + std::to_string(i) + ".txt";
 		  vecFile = std::ofstream(vecPath);
 		  vecFile << curVecField << std::endl;
 		  vecFieldLists.push_back(curVecField);
 
 
-		  std::string magPath = folder + "magField_" + std::to_string(i) + ".csv";
+		  std::string magPath = folder + "/scaField_" + std::to_string(i) + ".csv";
 		  std::ofstream magFile(magPath);
 		  for (int i = 0; i < curScalarField.rows(); i++)
 			  magFile << curScalarField[i] << ",\t" << 3.14159 << std::endl;
 
-		  magPath = folder + "magField_" + std::to_string(i) + ".txt";
+		  magPath = folder + "/scaField_" + std::to_string(i) + ".txt";
 		  magFile = std::ofstream(magPath);
 		  magFile << curScalarField << std::endl;
 		  scalarFieldLists.push_back(curScalarField);
@@ -999,7 +934,6 @@ void callback() {
 
 	  curMin = scalarField.minCoeff();
 	  curMax = scalarField.maxCoeff();
-
 	  updateFieldsInView();
   }
   ImGui::SameLine();
@@ -1007,6 +941,7 @@ void callback() {
   {
 	  if (totalFrames <= 0)
 		  totalFrames = 10;
+	  updateSavingFolder(exeFolder);
   }
 
   if (ImGui::DragInt("current frame", &curFrame, 0.1, 0, totalFrames))
@@ -1024,32 +959,7 @@ void callback() {
 		  updateFieldsInView();
 		  if (isSaveScreenShot)
 		  {
-			  int numSteps = totalFrames;
-			  std::string curPath = std::filesystem::current_path();
-			  std::cout << "current path: " << curPath << std::endl;
-			  std::string filePath = curPath + "/results/" + modelName + "/" + std::to_string(numSteps) + "Steps/";
-
-			  if (bndTypes == 0)
-				  filePath += "Direchlet/";
-			  else
-				  filePath += "ConstProj/";
-
-			  std::string DTmodel = "";
-
-			  if (dynamicTypes == DynamicType::DT_Rotate)
-				  DTmodel = "rotate/";
-			  else if (dynamicTypes == DynamicType::DT_ENLARGE)
-				  DTmodel = "enlarge/";
-			  else if (dynamicTypes == DynamicType::DT_COMPOSITE)
-				  DTmodel = "composite/";
-			  else if (dynamicTypes == DynamicType::DT_HALF_ROTATE)
-				  DTmodel = "half_rotate/";
-			  else if (dynamicTypes == DynamicType::DT_HALF_ENLARGE)
-				  DTmodel = "half_enlarge/";
-			  else
-				  DTmodel = "half_composite/";
-
-			  std::string folder = filePath + DTmodel + "imags/";
+			  std::string folder = savingFolder + "imags/";
 			  std::cout << "saving folder: " << folder << std::endl;
 			  if (!std::filesystem::exists(folder))
 			  {
@@ -1067,6 +977,7 @@ void callback() {
   if (ImGui::DragFloat("vector ratio", &ratio, 0.001, 0, 1))
   {
 	  updateFieldsInView();
+	  updateSavingFolder(exeFolder);
   }
   if(ImGui::Checkbox("Enable Vector Field", &isShowVec))
   {
@@ -1125,6 +1036,9 @@ int main(int argc, char** argv)
 	// Register the mesh with Polyscope
 	polyscope::registerSurfaceMesh("input mesh", meshV, meshF);
 	initFields(vecField, scalarField);
+
+	exeFolder = std::filesystem::current_path().u8string();
+	updateSavingFolder(exeFolder);
 
 	// Add the callback
 	polyscope::state::userCallback = callback;
